@@ -1,0 +1,125 @@
+import spacy
+from collections import Counter, defaultdict
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+from textblob import TextBlob
+from community import community_louvain
+from nltk.corpus import stopwords
+import string
+
+# Load spaCy model with increased max_length
+nlp = spacy.load("en_core_web_sm")
+nlp.max_length = 2000000  # Increase max_length to 2 million characters
+
+# Get stopwords
+stop_words = set(stopwords.words('english'))
+
+def is_proper_noun(token):
+    return token.pos_ == "PROPN" and token.text[0].isupper() and len(token.text) > 1 and token.text.lower() not in stop_words
+
+def extract_proper_nouns(doc):
+    proper_nouns = []
+    for sent in doc.sents:
+        for token in sent:
+            if is_proper_noun(token) and not token.is_punct and not token.like_num:
+                proper_nouns.append(token.text)
+    return proper_nouns
+
+def get_sentiment(text):
+    return TextBlob(text).sentiment.polarity
+
+def process_text_in_chunks(text, chunk_size=100000):
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i+chunk_size]
+
+def create_co_occurrence_matrix(file_path, window_size=5):
+    with open(file_path, 'r', encoding='utf-8') as file:
+        text = file.read()
+    
+    all_entities = []
+    co_occurrence = defaultdict(lambda: defaultdict(lambda: {'count': 0, 'sentiment': 0}))
+
+    for chunk in process_text_in_chunks(text):
+        doc = nlp(chunk)
+        entities = extract_proper_nouns(doc)
+        all_entities.extend(entities)
+        
+        for sent in doc.sents:
+            sent_entities = [e for e in entities if e in sent.text]
+            sentiment = get_sentiment(sent.text)
+            
+            for i, entity in enumerate(sent_entities):
+                for j in range(max(0, i-window_size), min(len(sent_entities), i+window_size+1)):
+                    if i != j:
+                        co_occurrence[entity][sent_entities[j]]['count'] += 1
+                        co_occurrence[entity][sent_entities[j]]['sentiment'] += sentiment
+
+    # Normalize sentiment
+    for entity in co_occurrence:
+        for other_entity in co_occurrence[entity]:
+            count = co_occurrence[entity][other_entity]['count']
+            if count > 0:
+                co_occurrence[entity][other_entity]['sentiment'] /= count
+
+    unique_entities = list(set(all_entities))
+    return unique_entities, co_occurrence
+
+def visualize_co_occurrence(entities, co_occurrence):
+    G = nx.Graph()
+    for entity in entities:
+        G.add_node(entity)
+        for other_entity, data in co_occurrence[entity].items():
+            if data['count'] > 0:
+                G.add_edge(entity, other_entity, weight=data['count'], sentiment=data['sentiment'])
+
+    # Detect communities
+    communities = community_louvain.best_partition(G)
+    
+    plt.figure(figsize=(24, 24))
+    pos = nx.spring_layout(G, k=0.5, iterations=50)
+    
+    # Draw nodes colored by community
+    nx.draw_networkx_nodes(G, pos, node_size=300, node_color=list(communities.values()), cmap=plt.cm.tab20)
+    
+    # Draw edges with varying thickness and color based on sentiment
+    edge_colors = []
+    for (u, v, d) in G.edges(data=True):
+        if d['sentiment'] > 0:
+            edge_colors.append('green')
+        elif d['sentiment'] < 0:
+            edge_colors.append('red')
+        else:
+            edge_colors.append('gray')
+
+    edge_weights = [G[u][v]['weight'] for u, v in G.edges()]
+    max_weight = max(edge_weights)
+    nx.draw_networkx_edges(G, pos, width=[w/max_weight*2 for w in edge_weights], 
+                           edge_color=edge_colors, alpha=0.7)
+    
+    # Add labels
+    nx.draw_networkx_labels(G, pos, font_size=6, font_weight='bold')
+    
+    plt.title("Proper Noun Co-occurrence Network with Communities and Sentiment", fontsize=20)
+    plt.axis('off')
+    plt.tight_layout()
+
+    # Add legend for sentiment
+    plt.plot([0], [0], color='green', label='Positive Sentiment', linewidth=2)
+    plt.plot([0], [0], color='red', label='Negative Sentiment', linewidth=2)
+    plt.plot([0], [0], color='gray', label='Neutral Sentiment', linewidth=2)
+    
+    # Add legend for communities
+    for i in range(max(communities.values()) + 1):
+        plt.plot([0], [0], color=plt.cm.tab20(i), label=f'Community {i}', linewidth=2)
+    
+    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=2)
+
+    plt.savefig('improved_proper_noun_community_sentiment_network.png', dpi=300, bbox_inches='tight')
+    print("Improved Proper Noun Co-occurrence Network with Communities and Sentiment saved as improved_proper_noun_community_sentiment_network.png")
+
+# Usage
+file_path = "C:/Users/scott/Desktop/GH MoodMe/MobyDick.txt"
+entities, co_occurrence = create_co_occurrence_matrix(file_path)
+visualize_co_occurrence(entities, co_occurrence)
+
